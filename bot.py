@@ -4,7 +4,7 @@ import logging
 import asyncio
 from datetime import datetime
 from fastapi import FastAPI, Request
-from telegram import Update, InputFile
+from telegram import Update, InputFile, BotCommand
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -29,8 +29,13 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# ---------------- FASTAPI APP ----------------
+app = FastAPI()
+bot_app = Application.builder().token(BOT_TOKEN).build()
+
 # ---------------- YT-DLP OPTIONS ----------------
 def get_audio_opts():
+    os.makedirs("downloads", exist_ok=True)
     opts = {
         'format': 'bestaudio/best',
         'noplaylist': True,
@@ -46,11 +51,7 @@ def get_audio_opts():
         opts['cookiefile'] = YT_COOKIES_FILE
     return opts
 
-# ---------------- FASTAPI APP ----------------
-app = FastAPI()
-bot_app = Application.builder().token(BOT_TOKEN).build()
-
-# ---------------- HELPER FUNCTIONS ----------------
+# ---------------- HELPERS ----------------
 def get_greeting():
     hour = datetime.now().hour
     if 5 <= hour < 12:
@@ -63,13 +64,16 @@ def get_greeting():
         return "Hello"
 
 async def download_youtube(query: str):
-    os.makedirs("downloads", exist_ok=True)
     opts = get_audio_opts()
-    info_data = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch3:{query}", download=True))
+    # Use asyncio.to_thread to not block the event loop
+    info_data = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch1:{query}", download=True))
     if not info_data.get('entries'):
         raise ValueError("No search results found")
     info = info_data['entries'][0]
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
+    # Ensure file ends with .mp3
+    if not filename.endswith(".mp3"):
+        filename = filename.rsplit(".", 1)[0] + ".mp3"
     title = info.get('title', 'Song')
     return filename, title
 
@@ -84,10 +88,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     greeting = get_greeting()
     await update.message.reply_text(
-        f"{greeting}, {user.first_name}! 👋\nSend me a song name and I will deliver it to you immediately."
+        f"{greeting}, {user.first_name}! 👋\nSend me a song name and I will deliver it immediately."
     )
 
-# ---------------- SEND SONG HANDLER ----------------
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📌 Commands:\n"
+        "/start - Start bot\n"
+        "/help - Instructions\n"
+        "/about - About bot\n"
+        "/features - Bot features\n"
+        "/donate - Support owner\n"
+        "/support - Contact owner\n"
+        "/privacy - Privacy policy\n"
+        "/terms - Terms & conditions\n"
+        "Simply send a song name to get the audio!"
+    )
+
+async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"☁️ CloudSong Bot v1.0\nOwner: {OWNER_USERNAME}\nA Telegram bot to search and deliver music from YouTube."
+    )
+
+async def features(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎵 Features:\n"
+        "- Instant song delivery\n"
+        "- High-quality audio\n"
+        "- Typing indicator while downloading\n"
+        "- Auto cleanup after 72 hours"
+    )
+
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💸 Support the bot development by donating here:\nhttps://www.paypal.me/yourlink"
+    )
+
+async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"💬 Contact the owner: {OWNER_USERNAME}")
+
+async def privacy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔒 Privacy Policy:\nWe do not store your data. All songs are downloaded temporarily and deleted after 72 hours."
+    )
+
+async def terms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📄 Terms & Conditions:\nUse this bot responsibly. Do not share copyrighted content illegally."
+    )
+
+# ---------------- SEND SONG ----------------
 async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query_text = update.message.text.strip()
     if not query_text:
@@ -111,7 +161,29 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- REGISTER HANDLERS ----------------
 bot_app.add_handler(CommandHandler("start", start))
+bot_app.add_handler(CommandHandler("help", help_command))
+bot_app.add_handler(CommandHandler("about", about))
+bot_app.add_handler(CommandHandler("features", features))
+bot_app.add_handler(CommandHandler("donate", donate))
+bot_app.add_handler(CommandHandler("support", support))
+bot_app.add_handler(CommandHandler("privacy", privacy))
+bot_app.add_handler(CommandHandler("terms", terms))
+
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_song))
+
+# ---------------- SET BOT COMMANDS ----------------
+async def set_bot_commands():
+    commands = [
+        BotCommand("start", "Start the bot"),
+        BotCommand("help", "Instructions"),
+        BotCommand("about", "About the bot"),
+        BotCommand("features", "Bot features"),
+        BotCommand("donate", "Support owner"),
+        BotCommand("support", "Contact owner"),
+        BotCommand("privacy", "Privacy policy"),
+        BotCommand("terms", "Terms & conditions")
+    ]
+    await bot_app.bot.set_my_commands(commands)
 
 # ---------------- FASTAPI ROUTES ----------------
 @app.get("/")
@@ -135,6 +207,8 @@ async def startup_event():
     await bot_app.initialize()
     await bot_app.start()
     logging.info("✅ Bot application started!")
+    await set_bot_commands()
+
     if WEBHOOK_URL:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}"
         try:
