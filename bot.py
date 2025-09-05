@@ -29,12 +29,14 @@ logging.basicConfig(
 )
 
 # ---------------- YT-DLP OPTIONS ----------------
+# For link only
 ydl_opts_link = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
     'skip_download': True,
 }
+# For audio download
 ydl_opts_audio = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -60,7 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 Welcome to CloudSong Bot!\n\n"
         "Commands:\n"
         "/link <song> → Get YouTube link\n"
-        "/song <song> → Get actual audio\n"
+        "/song <song> → Get actual audio + video link\n"
         "Type /help for more instructions."
     )
 
@@ -68,7 +70,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 Instructions:\n"
         "- /link <song> → Send YouTube link\n"
-        "- /song <song> → Send audio file\n"
+        "- /song <song> → Send audio file + video link\n"
         "- /about → Bot info\n"
         "- /support → Contact owner\n"
         "- Inline mode: `@YourBotUsername <song>`"
@@ -106,7 +108,7 @@ async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Could not find the song. Try another name.")
 
-# ---------------- SONG COMMAND ----------------
+# ---------------- SONG COMMAND (Audio + Link) ----------------
 async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
     if not query:
@@ -115,17 +117,28 @@ async def song_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🎵 Downloading: {query} ...")
     audio_file = None
     try:
+        # 1️⃣ Download audio
         with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
             info = ydl.extract_info(f"ytsearch:{query}", download=True)['entries'][0]
             audio_file = ydl.prepare_filename(info)
+            title = info.get('title', 'Song')
+            url = info.get('webpage_url', '')
+
+        # 2️⃣ Send audio
         await update.message.reply_audio(
             audio=InputFile(audio_file),
-            title=info.get('title', 'Song')
+            title=title
         )
+
+        # 3️⃣ Send YouTube link
+        if url:
+            await update.message.reply_text(f"📺 YouTube Link: {url}")
+
     except Exception as e:
         await update.message.reply_text("❌ Could not download the song. Try another name.")
         logging.error(f"yt-dlp download error: {e}")
     finally:
+        # Clean up temporary file
         if audio_file and os.path.exists(audio_file):
             os.remove(audio_file)
 
@@ -139,7 +152,7 @@ async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         results = [
             InlineQueryResultAudio(
                 id=str(uuid.uuid4()),
-                audio_url=url,
+                audio_url=url,  # still link only for inline
                 title=title
             )
         ]
