@@ -4,7 +4,7 @@ import logging
 import asyncio
 from datetime import datetime
 from fastapi import FastAPI, Request
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,28 +30,37 @@ logging.basicConfig(
 )
 
 # ---------------- YT-DLP OPTIONS ----------------
-ydl_opts_audio = {
-    'format': 'bestaudio/best',
-    'noplaylist': True,
-    'quiet': True,
-    'outtmpl': 'downloads/%(id)s.%(ext)s',
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
-}
+def get_audio_opts(bitrate="192"):
+    opts = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'quiet': True,
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': bitrate,
+        }],
+    }
+    if YT_COOKIES_FILE:
+        opts['cookiefile'] = YT_COOKIES_FILE
+    return opts
 
-ydl_opts_video = {
-    'format': 'bestvideo+bestaudio/best',
-    'noplaylist': True,
-    'quiet': True,
-    'outtmpl': 'downloads/%(id)s.%(ext)s',
-}
-
-if YT_COOKIES_FILE:
-    ydl_opts_audio['cookiefile'] = YT_COOKIES_FILE
-    ydl_opts_video['cookiefile'] = YT_COOKIES_FILE
+def get_video_opts(resolution="720"):
+    format_map = {
+        "360": "bestvideo[height<=360]+bestaudio/best",
+        "720": "bestvideo[height<=720]+bestaudio/best",
+        "1080": "bestvideo[height<=1080]+bestaudio/best",
+    }
+    opts = {
+        'format': format_map.get(resolution, "bestvideo+bestaudio/best"),
+        'noplaylist': True,
+        'quiet': True,
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
+    }
+    if YT_COOKIES_FILE:
+        opts['cookiefile'] = YT_COOKIES_FILE
+    return opts
 
 # ---------------- FASTAPI APP ----------------
 app = FastAPI()
@@ -69,21 +78,19 @@ def get_greeting():
     else:
         return "Hello"
 
-async def download_youtube(query: str, mode: str):
-    # Ensure downloads folder exists
+async def download_youtube(query: str, mode: str, quality: str = None, resolution: str = None):
     os.makedirs("downloads", exist_ok=True)
+    if mode == "audio":
+        opts = get_audio_opts(quality or "192")
+    else:
+        opts = get_video_opts(resolution or "720")
 
-    opts = ydl_opts_audio if mode == "audio" else ydl_opts_video
-
-    # Download in separate thread to avoid blocking
     info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
-
     title = info.get('title', 'Song')
     return filename, title
 
 async def delete_file_later(file_path: str, delay: int = 259200):
-    """Deletes a file after 72 hours (259200 seconds)."""
     await asyncio.sleep(delay)
     if os.path.exists(file_path):
         os.remove(file_path)
@@ -94,8 +101,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     greeting = get_greeting()
     await update.message.reply_text(
-        f"{greeting}, {user.first_name}! 👋\n"
-        "Choose what you want to receive:",
+        f"{greeting}, {user.first_name}! 👋\nChoose what you want to receive:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🎵 Audio", callback_data="mode_audio")],
             [InlineKeyboardButton("🎥 Video", callback_data="mode_video")]
@@ -108,30 +114,64 @@ async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     mode = query.data.split("_")[1]
     context.user_data['mode'] = mode
-    await query.edit_message_text(f"✅ Mode set to: {mode.capitalize()}\nNow send me the song name!")
+
+    if mode == "audio":
+        await query.edit_message_text(
+            "✅ Audio mode selected. Choose quality:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("128 kbps", callback_data="audio_128")],
+                [InlineKeyboardButton("192 kbps", callback_data="audio_192")],
+                [InlineKeyboardButton("320 kbps", callback_data="audio_320")]
+            ])
+        )
+    else:
+        await query.edit_message_text(
+            "✅ Video mode selected. Choose resolution:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("360p", callback_data="video_360")],
+                [InlineKeyboardButton("720p", callback_data="video_720")],
+                [InlineKeyboardButton("1080p", callback_data="video_1080")]
+            ])
+        )
+
+async def set_quality_resolution(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data.split("_")
+    mode = data[0]
+    value = data[1]
+
+    context.user_data['mode'] = mode
+    if mode == "audio":
+        context.user_data['quality'] = value
+        await query.edit_message_text(f"✅ Audio quality set to {value} kbps.\nNow send me the song name!")
+    else:
+        context.user_data['resolution'] = value
+        await query.edit_message_text(f"✅ Video resolution set to {value}p.\nNow send me the song name!")
 
 # ---------------- SEND SONG HANDLER ----------------
 async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text.strip()
+    query_text = update.message.text.strip()
     mode = context.user_data.get('mode')
     if not mode:
         await update.message.reply_text("❌ Please select a mode first using /start!")
         return
 
-    await update.message.reply_text(f"🎵 Downloading {mode} for: {query} ...")
+    quality = context.user_data.get('quality')
+    resolution = context.user_data.get('resolution')
+
+    await update.message.chat.send_action(action=ChatAction.UPLOAD_AUDIO if mode=="audio" else ChatAction.UPLOAD_VIDEO)
+    await update.message.reply_text(f"🎵 Downloading {mode} for: {query_text} ...")
+    
     file_path = None
     try:
-        file_path, title = await download_youtube(query, mode)
+        file_path, title = await download_youtube(query_text, mode, quality, resolution)
         if mode == "audio":
-            with InputFile(file_path, filename=f"{title}.mp3") as f:
-                await update.message.reply_audio(audio=f, title=title)
+            await update.message.reply_audio(audio=InputFile(file_path), title=title)
         else:
-            with InputFile(file_path, filename=f"{title}.mp4") as f:
-                await update.message.reply_video(video=f, caption=title)
+            await update.message.reply_video(video=InputFile(file_path), caption=title)
 
         logging.info(f"✅ Sent {mode} for: {title}")
-
-        # Schedule deletion after 72 hours
         if file_path:
             asyncio.create_task(delete_file_later(file_path))
 
@@ -142,6 +182,7 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- REGISTER HANDLERS ----------------
 bot_app.add_handler(CommandHandler("start", start))
 bot_app.add_handler(CallbackQueryHandler(set_mode, pattern="mode_"))
+bot_app.add_handler(CallbackQueryHandler(set_quality_resolution, pattern="audio_|video_"))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_song))
 
 # ---------------- FASTAPI ROUTES ----------------
