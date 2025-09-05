@@ -2,14 +2,15 @@ import os
 import uuid
 import logging
 import asyncio
+from datetime import datetime
 from fastapi import FastAPI, Request
-from telegram import Update, InputFile
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     MessageHandler,
     CommandHandler,
     ContextTypes,
-    InlineQueryHandler,
+    CallbackQueryHandler,
     filters
 )
 import yt_dlp
@@ -41,97 +42,88 @@ ydl_opts_audio = {
     }],
 }
 
+ydl_opts_video = {
+    'format': 'bestvideo+bestaudio/best',
+    'noplaylist': True,
+    'quiet': True,
+    'outtmpl': 'downloads/%(id)s.%(ext)s',
+}
+
 if YT_COOKIES_FILE:
     ydl_opts_audio['cookiefile'] = YT_COOKIES_FILE
+    ydl_opts_video['cookiefile'] = YT_COOKIES_FILE
 
 # ---------------- FASTAPI APP ----------------
 app = FastAPI()
 bot_app = Application.builder().token(BOT_TOKEN).build()
 
+# ---------------- HELPER FUNCTIONS ----------------
+def get_greeting():
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "Good Morning"
+    elif 12 <= hour < 17:
+        return "Good Afternoon"
+    elif 17 <= hour < 21:
+        return "Good Evening"
+    else:
+        return "Hello"
+
+async def download_youtube(query: str, mode: str):
+    opts = ydl_opts_audio if mode == "audio" else ydl_opts_video
+    info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
+    filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
+    url = info.get('webpage_url')
+    title = info.get('title', 'Song')
+    return filename, title, url
+
 # ---------------- COMMAND HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    greeting = get_greeting()
     await update.message.reply_text(
-        "🎵 Welcome to CloudSong Bot!\n\n"
-        "Just send the song name and I'll deliver it directly!\n"
-        "Type /help for more instructions."
+        f"{greeting}, {user.first_name}! 👋\n"
+        "Choose what you want to receive:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎵 Audio", callback_data="mode_audio")],
+            [InlineKeyboardButton("🎥 Video", callback_data="mode_video")]
+        ])
     )
+    # Store the chosen mode in context.user_data
+    context.user_data['mode'] = None
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📌 Instructions:\n"
-        "- Send any song name → Get audio file + YouTube link\n"
-        "- /about → Bot info\n"
-        "- /support → Contact owner"
-    )
+async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    mode = query.data.split("_")[1]
+    context.user_data['mode'] = mode
+    await query.edit_message_text(f"✅ Mode set to: {mode.capitalize()}\nNow send me the song name!")
 
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"☁️ CloudSong Bot v1.0\nOwner: {OWNER_USERNAME}\n"
-        "A professional Telegram bot to search and deliver music from YouTube."
-    )
-
-async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"💬 For support, contact: {OWNER_USERNAME}")
-
-# ---------------- YOUTUBE SEARCH & DOWNLOAD ----------------
-async def auto_send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
-    if not query:
-        return
-    await update.message.reply_text(f"🎵 Downloading: {query} ...")
-    audio_file = None
+    mode = context.user_data.get('mode', 'audio')  # default to audio
+    await update.message.reply_text(f"🎵 Downloading {mode} for: {query} ...")
+    file_path = None
     try:
-        # Download audio in thread to avoid blocking
-        info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts_audio).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
-        audio_file = yt_dlp.YoutubeDL(ydl_opts_audio).prepare_filename(info)
-        title = info.get('title', 'Song')
-        url = info.get('webpage_url', '')
-
-        # Send audio
-        await update.message.reply_audio(audio=InputFile(audio_file), title=title)
-
-        # Send YouTube link
+        file_path, title, url = await download_youtube(query, mode)
+        if mode == "audio":
+            await update.message.reply_audio(audio=InputFile(file_path), title=title)
+        else:
+            await update.message.reply_video(video=InputFile(file_path), caption=title)
         if url:
             await update.message.reply_text(f"📺 YouTube Link: {url}")
-
+        logging.info(f"✅ Sent {mode} for: {title}")
     except Exception as e:
         await update.message.reply_text("❌ Could not download the song. Try another name.")
         logging.error(f"yt-dlp download error: {e}")
     finally:
-        if audio_file and os.path.exists(audio_file):
-            os.remove(audio_file)
-
-# ---------------- INLINE QUERY (optional, link only) ----------------
-async def inline_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.inline_query.query.strip()
-    if not query:
-        return
-    try:
-        with yt_dlp.YoutubeDL({'format': 'bestaudio', 'noplaylist': True, 'quiet': True}) as ydl:
-            info = ydl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
-            url = info.get('webpage_url')
-            title = info.get('title')
-        if url and title:
-            from telegram import InlineQueryResultArticle, InputTextMessageContent
-            results = [
-                InlineQueryResultArticle(
-                    id=str(uuid.uuid4()),
-                    title=title,
-                    input_message_content=InputTextMessageContent(f"{title}\n{url}")
-                )
-            ]
-            await update.inline_query.answer(results, cache_time=0)
-    except Exception as e:
-        logging.error(f"Inline search error: {e}")
-        await update.inline_query.answer([], switch_pm_text="No results found", switch_pm_parameter="start")
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
 
 # ---------------- REGISTER HANDLERS ----------------
 bot_app.add_handler(CommandHandler("start", start))
-bot_app.add_handler(CommandHandler("help", help_command))
-bot_app.add_handler(CommandHandler("about", about))
-bot_app.add_handler(CommandHandler("support", support))
-bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, auto_send_song))
-bot_app.add_handler(InlineQueryHandler(inline_search))
+bot_app.add_handler(CallbackQueryHandler(set_mode, pattern="mode_"))
+bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_song))
 
 # ---------------- FASTAPI ROUTES ----------------
 @app.get("/")
