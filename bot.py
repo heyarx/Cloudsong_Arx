@@ -71,7 +71,6 @@ def get_greeting():
 
 async def download_youtube(query: str, mode: str):
     opts = ydl_opts_audio if mode == "audio" else ydl_opts_video
-    # Download and extract info in a thread to avoid blocking
     info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
     title = info.get('title', 'Song')
@@ -98,18 +97,19 @@ async def set_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['mode'] = mode
     await query.edit_message_text(f"✅ Mode set to: {mode.capitalize()}\nNow send me the song name!")
 
+# ---------------- SEND SONG HANDLER ----------------
 async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     mode = context.user_data.get('mode')
     if not mode:
         await update.message.reply_text("❌ Please select a mode first using /start!")
         return
+
     await update.message.reply_text(f"🎵 Downloading {mode} for: {query} ...")
     file_path = None
     try:
         file_path, title = await download_youtube(query, mode)
         if mode == "audio":
-            # Use InputFile with MIME type audio/mpeg to ensure playable
             await update.message.reply_audio(audio=InputFile(file_path, filename=f"{title}.mp3"), title=title)
         else:
             await update.message.reply_video(video=InputFile(file_path, filename=f"{title}.mp4"), caption=title)
