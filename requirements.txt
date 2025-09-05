@@ -1,5 +1,16 @@
+# Telegram bot framework
 python-telegram-bot==20.5
+
+# YouTube downloader
 yt-dlp>=2025.8.1
+
+# HTTP requests
 requests>=2.31.0
+httpx~=0.24.1
+
+# Web server for webhook
 fastapi>=0.109.2
 uvicorn[standard]>=0.24.1
+
+# Optional: Python interface for ffmpeg (yt-dlp uses system ffmpeg)
+ffmpeg-python>=0.3.0

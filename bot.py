@@ -4,7 +4,8 @@ import logging
 import asyncio
 from datetime import datetime
 from fastapi import FastAPI, Request
-from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup, ChatAction
+from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -85,7 +86,10 @@ async def download_youtube(query: str, mode: str, quality: str = None, resolutio
     else:
         opts = get_video_opts(resolution or "720")
 
-    info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
+    info_data = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch3:{query}", download=True))
+    if not info_data.get('entries'):
+        raise ValueError("No search results found")
+    info = info_data['entries'][0]
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
     title = info.get('title', 'Song')
     return filename, title
@@ -176,7 +180,7 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(delete_file_later(file_path))
 
     except Exception as e:
-        await update.message.reply_text("❌ Could not download the song. Try another name.")
+        await update.message.reply_text(f"❌ Could not download the song. Try another name.\nError: {e}")
         logging.error(f"yt-dlp download error: {e}")
 
 # ---------------- REGISTER HANDLERS ----------------
