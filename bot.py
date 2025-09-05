@@ -23,6 +23,10 @@ OWNER_USERNAME = "@hey_arnab02"
 YT_COOKIES_FILE = os.environ.get("YT_COOKIES_FILE")  # Optional
 PORT = int(os.environ.get("PORT", 10000))
 
+# ---------------- DOWNLOAD FOLDER ----------------
+DOWNLOAD_DIR = "/tmp/downloads"  # Safe path on Render
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
 # ---------------- LOGGING ----------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -35,12 +39,11 @@ bot_app = Application.builder().token(BOT_TOKEN).build()
 
 # ---------------- YT-DLP OPTIONS ----------------
 def get_audio_opts():
-    os.makedirs("downloads", exist_ok=True)
     opts = {
         'format': 'bestaudio/best',
         'noplaylist': True,
         'quiet': True,
-        'outtmpl': 'downloads/%(id)s.%(ext)s',
+        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -65,12 +68,13 @@ def get_greeting():
 
 async def download_youtube(query: str):
     opts = get_audio_opts()
-    info_data = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch1:{query}", download=True))
+    info_data = await asyncio.to_thread(
+        lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch1:{query}", download=True)
+    )
     if not info_data.get('entries'):
         raise ValueError("No search results found")
     info = info_data['entries'][0]
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
-    # Ensure file ends with .mp3
     if not filename.endswith(".mp3"):
         filename = filename.rsplit(".", 1)[0] + ".mp3"
     title = info.get('title', 'Song')
@@ -151,6 +155,7 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_path, title = await download_youtube(query_text)
         if os.path.exists(file_path):
+            await update.message.chat.send_action(action=ChatAction.UPLOAD_AUDIO)
             await update.message.reply_audio(audio=InputFile(file_path), title=title)
             logging.info(f"✅ Sent audio for: {title}")
             asyncio.create_task(delete_file_later(file_path))
