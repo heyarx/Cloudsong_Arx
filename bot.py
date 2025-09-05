@@ -79,9 +79,15 @@ async def download_youtube(query: str, mode: str):
     info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
 
-    # yt-dlp automatically converts audio to mp3 if audio mode
     title = info.get('title', 'Song')
     return filename, title
+
+async def delete_file_later(file_path: str, delay: int = 259200):
+    """Deletes a file after 72 hours (259200 seconds)."""
+    await asyncio.sleep(delay)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        logging.info(f"🗑️ Deleted file after 72 hours: {file_path}")
 
 # ---------------- COMMAND HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -117,20 +123,21 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_path, title = await download_youtube(query, mode)
         if mode == "audio":
-            # Send audio only
-            await update.message.reply_audio(audio=InputFile(file_path, filename=f"{title}.mp3"), title=title)
+            with InputFile(file_path, filename=f"{title}.mp3") as f:
+                await update.message.reply_audio(audio=f, title=title)
         else:
-            # Send video only
-            await update.message.reply_video(video=InputFile(file_path, filename=f"{title}.mp4"), caption=title)
+            with InputFile(file_path, filename=f"{title}.mp4") as f:
+                await update.message.reply_video(video=f, caption=title)
 
         logging.info(f"✅ Sent {mode} for: {title}")
+
+        # Schedule deletion after 72 hours
+        if file_path:
+            asyncio.create_task(delete_file_later(file_path))
+
     except Exception as e:
         await update.message.reply_text("❌ Could not download the song. Try another name.")
         logging.error(f"yt-dlp download error: {e}")
-    finally:
-        # Clean up temporary file
-        if file_path and os.path.exists(file_path):
-            os.remove(file_path)
 
 # ---------------- REGISTER HANDLERS ----------------
 bot_app.add_handler(CommandHandler("start", start))
