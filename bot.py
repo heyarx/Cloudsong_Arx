@@ -70,16 +70,16 @@ def get_greeting():
         return "Hello"
 
 async def download_youtube(query: str, mode: str):
+    # Ensure downloads folder exists
+    os.makedirs("downloads", exist_ok=True)
+
     opts = ydl_opts_audio if mode == "audio" else ydl_opts_video
+
+    # Download in separate thread to avoid blocking
     info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
 
-    # Ensure audio is .mp3
-    if mode == "audio" and not filename.endswith(".mp3"):
-        new_filename = f"{os.path.splitext(filename)[0]}.mp3"
-        os.rename(filename, new_filename)
-        filename = new_filename
-
+    # yt-dlp automatically converts audio to mp3 if audio mode
     title = info.get('title', 'Song')
     return filename, title
 
@@ -117,14 +117,18 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file_path, title = await download_youtube(query, mode)
         if mode == "audio":
+            # Send audio only
             await update.message.reply_audio(audio=InputFile(file_path, filename=f"{title}.mp3"), title=title)
         else:
+            # Send video only
             await update.message.reply_video(video=InputFile(file_path, filename=f"{title}.mp4"), caption=title)
+
         logging.info(f"✅ Sent {mode} for: {title}")
     except Exception as e:
         await update.message.reply_text("❌ Could not download the song. Try another name.")
         logging.error(f"yt-dlp download error: {e}")
     finally:
+        # Clean up temporary file
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
 
