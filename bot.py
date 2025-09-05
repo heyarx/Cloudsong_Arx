@@ -65,7 +65,6 @@ def get_greeting():
 
 async def download_youtube(query: str):
     opts = get_audio_opts()
-    # Use asyncio.to_thread to not block the event loop
     info_data = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch1:{query}", download=True))
     if not info_data.get('entries'):
         raise ValueError("No search results found")
@@ -75,6 +74,7 @@ async def download_youtube(query: str):
     if not filename.endswith(".mp3"):
         filename = filename.rsplit(".", 1)[0] + ".mp3"
     title = info.get('title', 'Song')
+    logging.info(f"✅ Downloaded file path: {os.path.abspath(filename)}")
     return filename, title
 
 async def delete_file_later(file_path: str, delay: int = 259200):
@@ -150,10 +150,12 @@ async def send_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_path = None
     try:
         file_path, title = await download_youtube(query_text)
-        await update.message.reply_audio(audio=InputFile(file_path), title=title)
-        logging.info(f"✅ Sent audio for: {title}")
-        if file_path:
+        if os.path.exists(file_path):
+            await update.message.reply_audio(audio=InputFile(file_path), title=title)
+            logging.info(f"✅ Sent audio for: {title}")
             asyncio.create_task(delete_file_later(file_path))
+        else:
+            await update.message.reply_text("❌ Error: Audio file not found after download.")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Could not download the song. Try another name.\nError: {e}")
