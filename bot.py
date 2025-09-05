@@ -73,6 +73,13 @@ async def download_youtube(query: str, mode: str):
     opts = ydl_opts_audio if mode == "audio" else ydl_opts_video
     info = await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(opts).extract_info(f"ytsearch:{query}", download=True)['entries'][0])
     filename = yt_dlp.YoutubeDL(opts).prepare_filename(info)
+
+    # Ensure audio is .mp3
+    if mode == "audio" and not filename.endswith(".mp3"):
+        new_filename = f"{os.path.splitext(filename)[0]}.mp3"
+        os.rename(filename, new_filename)
+        filename = new_filename
+
     title = info.get('title', 'Song')
     return filename, title
 
